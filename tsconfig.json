@@ -7,6 +7,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "moduleDetection": "force",
     "noEmitOnError": false,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
