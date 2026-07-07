@@ -1,9 +1,11 @@
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { User } from '../models/User';
+import { sendVerificationEmail } from '../utils/email';
 import { buildUserResponse } from '../utils/user';
 
 const registerSchema = z.object({
@@ -27,21 +29,24 @@ export async function register(req: Request, res: Response, next: NextFunction) 
     }
 
     const passwordHash = await bcrypt.hash(parsed.password, 10);
+    const verificationToken = crypto.randomBytes(32).toString('hex');
     const user = await User.create({
       name: parsed.name,
       email: parsed.email,
       passwordHash,
       credits: 0,
       datePurchased: null,
+      isVerified: false,
+      verificationToken,
+      verificationTokenExpiresAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
     });
 
-    const token = jwt.sign({ id: user._id.toString() }, env.JWT_SECRET, { expiresIn: '7d' });
+    await sendVerificationEmail(parsed.email, verificationToken);
 
     return res.status(201).json({
       success: true,
-      message: 'Registration succeeded. Buy credits to enable exports.',
+      message: 'Registration succeeded. Please verify your email before logging in.',
       data: {
-        token,
         user: buildUserResponse(user),
       },
     });
@@ -69,6 +74,10 @@ export async function login(req: Request, res: Response, next: NextFunction) {
       return res.status(401).json({ success: false, message: 'Invalid email or password.' });
     }
 
+    if (!user.isVerified) {
+      return res.status(403).json({ success: false, message: 'Please verify your email before logging in.' });
+    }
+
     const token = jwt.sign({ id: user._id.toString() }, env.JWT_SECRET, { expiresIn: '7d' });
 
     return res.status(200).json({
@@ -84,6 +93,35 @@ export async function login(req: Request, res: Response, next: NextFunction) {
       return res.status(400).json({ success: false, message: error.issues[0]?.message || 'Validation failed.' });
     }
 
+    next(error);
+  }
+}
+
+export async function verifyEmail(req: Request, res: Response, next: NextFunction) {
+  try {
+    const { token } = req.params;
+
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Verification token is required.' });
+    }
+
+    const user = await User.findOne({ verificationToken: token });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Invalid verification token.' });
+    }
+
+    if (user.verificationTokenExpiresAt && user.verificationTokenExpiresAt < new Date()) {
+      return res.status(400).json({ success: false, message: 'Verification token has expired.' });
+    }
+
+    user.isVerified = true;
+    user.verificationToken = null;
+    user.verificationTokenExpiresAt = null;
+    await user.save();
+
+    return res.status(200).json({ success: true, message: 'Email verified successfully. You can now log in.' });
+  } catch (error) {
     next(error);
   }
 }
